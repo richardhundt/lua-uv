@@ -55,11 +55,13 @@ static void create_object_registry(lua_State* L) {
   /* Make registry values weak. Allows the Lua GC
    * to clean up our stale objects for us.
    */
+   /*
   lua_createtable(L, 0, 1);
   lua_pushstring(L, "v");
   lua_setfield(L, -2, "__mode");
 
   lua_setmetatable(L, -2);
+  */
   lua_rawset(L, LUA_REGISTRYINDEX);
 }
 

@@ -16,6 +16,7 @@
 
 #include "lua_uv.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
@@ -28,24 +29,34 @@
   tcp_obj* self = container_of((h), tcp_obj, handle); \
   lua_State* L = self->handle.loop->data;
 
-
 typedef struct {
   uv_tcp_t handle;
   uv_connect_t connect_req; /* TODO alloc on as needed basis */
 } tcp_obj;
 
 
+#ifndef DEBUG
+#define puts(m) (void)0;
+#endif
+
 static uv_buf_t on_alloc(uv_handle_t* handle, size_t suggested_size) {
   puts(__func__);
   return uv_buf_init(malloc(suggested_size), suggested_size);
 }
 
+static void on_close(uv_handle_t* handle) {
+  UNWRAP(handle);
+  push_callback(L, self, "on_close");
+  lua_pcall(L, 1, 0, -3);
+  lua_settop(L, 1);
+}
 
 static void on_connect(uv_connect_t* req, int status) {
   UNWRAP(req->handle);
   push_callback(L, self, "on_connect");
   lua_pushinteger(L, status);
   lua_pcall(L, 2, 0, -4);
+  lua_settop(L, 1);
 }
 
 
@@ -55,6 +66,7 @@ static void on_connection(uv_stream_t* handle, int status) {
   push_callback(L, self, "on_connection");
   lua_pushinteger(L, status);
   lua_pcall(L, 2, 0, -4);
+  lua_settop(L, 1);
 }
 
 
@@ -63,18 +75,41 @@ static void on_read(uv_stream_t* handle, ssize_t nread, uv_buf_t buf) {
   puts(__func__);
   push_callback(L, self, "on_read");
   lua_pushinteger(L, nread);
-  if (nread >= 0)
+  if (nread >= 0) {
     lua_pushlstring(L, buf.base, nread);
-  else
+  }
+  else {
     lua_pushnil(L);
+    /*
+    uv_err_t err = uv_last_error(uv_default_loop());
+    if (err.code == UV_EOF) {
+      lua_pushnil(L);
+    }
+    else {
+      uv_close((uv_handle_t*)handle, on_close);
+      free(buf.base);
+      luaL_error(L, uv_strerror(uv_last_error(uv_default_loop())));
+    }
+    */
+  }
+
+  free(buf.base);
   lua_pcall(L, 3, 0, -5);
+  lua_settop(L, 1);
 }
 
+static void on_write_null(uv_write_t* req, int status) {
+  UNWRAP(req->handle);
+  lua_settop(L, 1);
+}
 
-static void on_close(uv_handle_t* handle) {
-  UNWRAP(handle);
-  push_callback(L, self, "on_close");
-  lua_pcall(L, 1, 0, -3);
+static void on_write(uv_write_t* req, int status) {
+  UNWRAP(req->handle);
+  puts(__func__);
+  push_callback(L, self, "on_write");
+  lua_pushinteger(L, status);
+  lua_pcall(L, 2, 0, -4);
+  lua_settop(L, 1);
 }
 
 
@@ -219,10 +254,27 @@ static int tcp_read_stop(lua_State* L) {
 
 
 static int tcp_write(lua_State* L) {
+  int r;
+  size_t len;
+  uv_buf_t buf;
   tcp_obj* self;
 
   self = luaL_checkudata(L, 1, "uv.tcp");
-  lua_pushinteger(L, -1);
+
+  uv_stream_t* handle = (uv_stream_t*)&self->handle;
+  const char* chunk = luaL_checklstring(L, 2, &len);
+
+  uv_write_t* req = (uv_write_t*)malloc(sizeof(uv_write_t));
+  buf = uv_buf_init((char*)chunk, len);
+
+  if (lua_isfunction(L, 3)) {
+    set_callback(L, "on_write", 3);
+    r = uv_write(req, handle, &buf, 1, on_write);
+  }
+  else {
+    r = uv_write(req, handle, &buf, 1, on_write_null);
+  }
+  lua_pushinteger(L, r);
 
   return 1;
 }
